@@ -19,8 +19,8 @@ int main()
 
 	std::ifstream f;
 	//std::string file = "./data/gauss.data";
-	std::string file = "./data/abalone3.data";
-	//std::string file = "./data/iris2.data";
+	//std::string file = "./data/abalone3.data";
+	std::string file = "./data/iris2.data";
 
 // obtained # of clusters by $(cat ../../data/abalone3.data | cut -f11 -d',' | sort -n | uniq | wc -l)
 //predefined_clusters = 28;
