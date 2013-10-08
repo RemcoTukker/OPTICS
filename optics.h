@@ -69,16 +69,19 @@ public:
 
 	};
 
-	///TODO: adapt this to our need...
-	// Cluster keeps track of the samples that belong to one cluster as a result of the algorithm
+	// Cluster stores a cluster result as indices to ordered_set
 	struct Cluster {
-		std::vector<size_t> r_data;
+		int start;
+		int end;
 	};
 
     //constructor
 	Optics(float eps, int minPoints, bool fixDimensionMismatches = false ) {
+
+        ///TODO: check
         minPts = minPoints;
         epsilon = eps;
+
         dimensionality = -1;
         permissive = fixDimensionMismatches;
     }
@@ -89,13 +92,10 @@ public:
     //this function is executed every once in a while
 	void tick() {
 
-        // make sure we make a clean start
-        clearResults();
+        clearResults(); // make sure we make a clean start
+	    startOptics(); //execute the OPTICS algorithm
 
-        //execute the OPTICS algorithm
-	    startOptics();
-
-		///TODO: remove this
+		///TODO: remove this when not necessary anymore
 		//give output of OPTICS as a data file for now
 	    std::ofstream f;
 		std::string file = "./output.data";
@@ -105,14 +105,14 @@ public:
 		}
 		f.close();
 
-		//evaluate results to see whether parameters were reasonable
-		evaluateResults();
+		evaluateResults(); //evaluate results to see whether parameters were reasonable
+		extractClusters(); //extract clusters from the results
 
-		//extract clusters from the results
-		extractClusters();
+		for (int i = 0; i < clusters.size(); i++) {
+			std::cout << i << " " << clusters[i].start << " " << clusters[i].end << std::endl;
+		}
 
-	    //compare result with ground truth using RAND
-	    compareWithGroundTruth();
+	    compareWithGroundTruth(); //compare result with ground truth using RAND
 
 	}
 
@@ -246,72 +246,132 @@ private:
 
 	}
 
+	enum SteepAreas { STEEPUP, STEEPDOWN, CLUSTER, OUTLIER };
+
+	SteepAreas checkPoint(int i, float xi) {
+		if ((ordered_set[i].reachabilityDistance < 0) && (ordered_set[i+1].reachabilityDistance < 0)) return OUTLIER;
+		if ((ordered_set[i].reachabilityDistance >= 0) && (ordered_set[i+1].reachabilityDistance < 0)) return STEEPUP;
+		if (ordered_set[i].reachabilityDistance <= ordered_set[i+1].reachabilityDistance *(1-xi)) return STEEPUP;
+		if ((ordered_set[i].reachabilityDistance < 0) && (ordered_set[i+1].reachabilityDistance >= 0)) return STEEPDOWN;
+		if (ordered_set[i].reachabilityDistance *(1-xi) >= ordered_set[i+1].reachabilityDistance) return STEEPDOWN;
+		return CLUSTER;
+	}
+
+	int findEndOfSteepRegion(int i, SteepAreas updown, float xi) {
+		int endPoint = i;
+		int flatPointsCounter = 0;
+		for (int j = i + 1; j < ordered_set.size() - 1; j++) {
+
+			//going in reverse direction stops steep area
+			if ((updown==STEEPUP)&&(ordered_set[j].reachabilityDistance < ordered_set[j-1].reachabilityDistance)) break;
+			if ((updown==STEEPDOWN)&&(ordered_set[j].reachabilityDistance>ordered_set[j-1].reachabilityDistance)) break;
+
+			//check if we have to do with a steep point or a flat point
+			if (checkPoint(j, xi) == updown) {
+				endPoint = j;
+				flatPointsCounter = 0;
+			} else {
+				flatPointsCounter++;
+				if (flatPointsCounter > minPts) break;
+			}
+		}
+		return endPoint;
+	}
+
+	struct steepDownArea {
+		int start;
+		int end;
+		float Dmib;
+	};
+
+	void tryToMakeACluster(int startUpArea, int endUpArea, std::vector<steepDownArea> &setOfSteepDownAreas, float xi) {
+
+		for (int i = 0; i < setOfSteepDownAreas.size(); i++) {
+			//check if we have a valid cluster (condition sc2* in the paper)
+			if (setOfSteepDownAreas[i].Dmib > ordered_set[endUpArea].reachabilityDistance * (1 - xi)) continue;
+
+			//determine start and end point
+			float reachStart = ordered_set[setOfSteepDownAreas[i].start].reachabilityDistance;
+			float reachEnd = ordered_set[endUpArea + 1].reachabilityDistance;
+			int SoC = 0;
+			int EoC = 0;
+			if ( (reachStart * (1 - xi) < reachEnd) && (reachEnd * (1 - xi) < reachStart) ) { //max xi apart
+				SoC = reachStart;
+				EoC = reachEnd;
+			} else if ((reachStart < 0) || (reachStart > reachEnd) ) { //more than xi apart
+				EoC = reachEnd;
+				float minDistance = fabs(reachEnd - reachStart);
+				int closestPoint = setOfSteepDownAreas[i].start;
+				for (int j = setOfSteepDownAreas[i].start+1; j <= setOfSteepDownAreas[i].end; j++) { //<= correct here?
+					if ( fabs(reachEnd - ordered_set[j].reachabilityDistance) < minDistance ) {
+						minDistance = fabs(reachEnd - ordered_set[j].reachabilityDistance);
+						closestPoint = j;
+					}
+				}
+				SoC = closestPoint;
+			} else {  // (reachStart < reachEnd ) and more than xi apart
+				SoC = reachStart;
+				float minDistance = fabs(reachEnd - reachStart);
+				int closestPoint = startUpArea;
+				for (int j = startUpArea+1; j <= endUpArea; j++) { //<= correct here?
+					if ( fabs(reachStart - ordered_set[j].reachabilityDistance) < minDistance ) {
+						minDistance = fabs(reachStart - ordered_set[j].reachabilityDistance);
+						closestPoint = j;
+					}
+				}
+				EoC = closestPoint;
+			}
+
+			if (EoC - SoC < minPts) continue; //cluster isnt large enough
+
+			// add cluster to SetOfClusters
+			clusters.push_back({SoC, EoC});
+		}
+
+
+
+	}
+
 	void extractClusters() {
 
 		///TODO: extract clusters from the results -> use clusters vector
 		///TODO: perhaps add a DBSCAN mode for extracting DBSCAN results
-		//vector setOfSteepDownAreas
+		std::vector<steepDownArea> setOfSteepDownAreas;
 		//vector setOfClusters
-		/*float xi = 0.05;
+
+		//add a temporary sample at the end with reachability -1
+		DataPoint terminator(Eigen::RowVector2f(0, 0), 0);
+		terminator.reachabilityDistance = -1;
+		ordered_set.push_back(terminator);
+
+		float xi = 0.05;
 		int index = 0;
 		float mib = 0;
-		while (index < ordered_set.size() - 1) {
+		while (index < ordered_set.size() - 1) { //dont consider the terminator sample
 			mib = std::max(mib, ordered_set[index].reachabilityDistance);
+			int end;
 
-			bool startDown = false;
-			bool startUp = false;
-
-			//check if we have to do with a steep point:
-			if (ordered_set[index].reachabilityDistance < 0 && ordered_set[index + 1].reachabilityDistance < 0) {
-				//two undefined points; current one is an outlier
-			} else if (ordered_set[index].reachabilityDistance < 0 && ordered_set[index+1].reachabilityDistance >= 0) {
-				//going from undefined to a distance; definitely start of a steep down area!
-				startDown = true;
-			} else if (ordered_set[index].reachabilityDistance >= 0 && ordered_set[index+1].reachabilityDistance < 0) {
-				//going from distance to undefined point; definitely start (and end) of steep up area
-				startUp = true;
-			} else if (ordered_set[index].reachabilityDistance *(1-xi) >= ordered_set[index+1].reachabilityDistance) {
-				//start of steep down area!
-				startDown = true;
-			} else if (ordered_set[index].reachabilityDistance <= ordered_set[index+1].reachabilityDistance *(1-xi)) {
-				//start of steep up area
-				startUp = true;
-			} else {
-				//nothing special.. point of a cluster
-
+			switch (checkPoint(index, xi)) {
+				case STEEPDOWN:
+					///TODO: update mib-values and filter SetOfSteepDownAreas(*)
+					end = findEndOfSteepRegion(index, STEEPDOWN, xi);
+					setOfSteepDownAreas.push_back( {index, end, 0} );
+					index = end + 1;
+					mib = ordered_set[index].reachabilityDistance;
+					break;
+				case STEEPUP:
+					///TODO: update mib-values and filter SetOfSteepDownAreas
+					end = findEndOfSteepRegion(index, STEEPUP, xi);
+					tryToMakeACluster(index, end, setOfSteepDownAreas, xi);
+					index = end + 1;
+					mib = ordered_set[index].reachabilityDistance;
+					break;
+				default:
+					index++;
 			}
+		}
 
-
-			if (startDown) //start of steep down area D at index
-			{
-				//update mib-values and filter SetOfSteepDownAreas(*)
-				//set D.mib = 0
-				//add D to the SetOfSteepDownAreas
-
-
-				//index = end of D + 1; mib = r(index)
-
-
-			}
-			else if (startUp) //start of steep up area U at index
-			{
-				//update mib-values and filter SetOfSteepDownAreas
-
-
-				//index = end of U + 1; mib = r(index)
-
-
-				//FOR EACH D in SetOfSteepDownAreas DO
-				//	IF(combination of D and U is valid AND(**)
-				//		satisfies cluster conditions 1, 2, 3a)
-				//		compute [s, e] add cluster to SetOfClusters
-
-			}
-			else {
-				index++;
-			}
-
-		}*/
+		ordered_set.pop_back(); //remove terminator sample again
 	}
 
 
@@ -328,9 +388,9 @@ private:
 	    }
 	}
 
-	/**
+	/******************************************************************************************************************
 	 * Helper function to find the seed that should be processed next: the one with the smallest reachability distance
-	 */
+	 *****************************************************************************************************************/
 
     int seedWithSmallestRDistance() {
 
