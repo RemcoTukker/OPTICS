@@ -33,7 +33,8 @@
 #include <map>
 
 /**
- * A class implementing the OPTICS algorithm and methods for extracting clusters from the OPTICS result
+ * A class implementing the OPTICS algorithm and methods for extracting clusters from the OPTICS result.
+ * The pretty stuff (the algorithm itself) is located at the bottom of this file.
  *
  * Based on the paper:
  *  OPTICS: Ordering Points To Identify the Clustering Structure
@@ -47,11 +48,14 @@
  *
  * TODO:
  *  - Pay some more attention to cluster extracting algorithms (add DBSCAN, improve authors proposal, add my own)
+ *  - Extract the hierarchy properly (what would be a good way to store / return this?)
  *  - Fix known issues (as far as possible)
  *  - Fix other TODO's scattered in the code
  *  - Use an indexer to speed up neighborhood queries...
+ *  - Use a seperate class / ABC for the cluster extracting algorithms
+ *  - Keep AIM stuff apart from OPTICS stuff: move OPTICS to seperate class
  *
- */
+ **/
 
 class Optics {
 public:
@@ -66,6 +70,8 @@ public:
 		}
 
         size_t ground_truth;  ///do not touch this until evaluation! (and dont use evaluation results for anything!)
+		size_t cluster_result; //this field is used to store a cluster number in at the end... perhaps improve to
+		//contain the hierarchy or store that in another way!
 		vector_t data;
 
         bool processed;             // for OPTICS to keep track of which datapoints were processed already
@@ -122,6 +128,22 @@ public:
 
 		for (int i = 0; i < clusters.size(); i++) {
 			std::cout << i << " " << clusters[i].start << " " << clusters[i].end << std::endl;
+		}
+
+		//make a hierarchy... (for now, extract first level of hierarchy, ignore the rest for the purpose of comparison)
+		for (int j = 0; j < ordered_set.size(); j++) { //takes care of outliers in an ugly way
+			ordered_set[j].cluster_result = j;
+		}
+
+		int topLevelClusterStart = ordered_set.size() + 1;
+		for (int i = clusters.size() - 1; i >= 0; i--) {
+			if (clusters[i].end < topLevelClusterStart) {
+				std::cout << "found top level cluster from " << clusters[i].start << " to " << clusters[i].end << std::endl;
+				for (int j = clusters[i].start; j <= clusters[i].end; j++) {
+					ordered_set[j].cluster_result = i + ordered_set.size();
+				}
+				topLevelClusterStart = clusters[i].start;
+			}
 		}
 
 	    compareWithGroundTruth(); //compare result with ground truth using RAND
@@ -246,27 +268,18 @@ private:
 		///TODO: use RAND for comparison
 		///possibly dont have this function here at all, its not the right place (?)
 		///only for testing / comparison purposes I guess..
-			/*
-	//get an evaluation of the result, given a ground truth..
-	void evaluate() {
-		for (int k = 0; k < clusters.size(); ++k) {
-			for (int i = 0; i < clusters[k].r_data.size(); ++i) {
-				labels[clusters[k].r_data[i]].prediction = k;
-//				std::cout << "Cluster " << k << ", data item " << clusters[k].r_data[i] << std::endl;
-			}
-		}
 
 		size_t a, b, c, d; a = b = c = d = 0;
-		for (int i = 0; i < data_set.size(); ++i) {
-			for (int j = i+1; j < data_set.size(); ++j) {
-				if (labels[i].ground_truth == labels[j].ground_truth) {
-					if (labels[i].prediction == labels[j].prediction) {
+		for (int i = 0; i < ordered_set.size(); ++i) {
+			for (int j = i+1; j < ordered_set.size(); ++j) {
+				if (ordered_set[i].ground_truth == ordered_set[j].ground_truth) {
+					if (ordered_set[i].cluster_result == ordered_set[j].cluster_result) {
 						a++;
 					} else {
 						c++;
 					}
 				} else {
-					if (labels[i].prediction == labels[j].prediction) {
+					if (ordered_set[i].cluster_result == ordered_set[j].cluster_result) {
 						d++;
 					} else {
 						b++;
@@ -279,10 +292,7 @@ private:
 		//std::cout << "Rand index is (" << a << "+" << b << ") /" << a+b+c+d << " = " << quality << std::endl;
 		std::cout << "Rand index is " << quality << std::endl;
 	}
-	*/
 
-
-	}
 
 	///TODO: add my own extraction method
 
@@ -334,7 +344,7 @@ private:
 
 	void tryToMakeACluster(int startUpArea, int endUpArea, std::vector<steepDownArea> &setOfSteepDownAreas, float xi) {
 
-		for (int i = 0; i < setOfSteepDownAreas.size(); i++) {
+		for (int i = setOfSteepDownAreas.size() - 1; i >= 0; i--) { //move backwards so that the largest cluster comes at the end
 			float reachStart = ordered_set[setOfSteepDownAreas[i].start].reachabilityDistance;
 			float reachEnd = ordered_set[endUpArea + 1].reachabilityDistance;
 			//check if we have a valid cluster (condition sc2* in the paper)
@@ -447,6 +457,7 @@ private:
 		}
 
 		ordered_set.pop_back(); //remove terminator sample again
+
 	}
 
 
