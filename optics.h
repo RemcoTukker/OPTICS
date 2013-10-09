@@ -33,7 +33,11 @@
 #include <map>
 
 /**
- * A class implementing the OPTICS algorithm
+ * A class implementing the OPTICS algorithm and methods for extracting clusters from the OPTICS result
+ *
+ * Based on the paper:
+ *  OPTICS: Ordering Points To Identify the Clustering Structure
+ *  M Ankerst, MM Breunig, H Kriegel, J Sanders
  *
  * Known issues:
  *  - Can only handle 32k data points for now (as I use ints to keep track of individual data points)
@@ -42,10 +46,11 @@
  *  - OPTICS is a density-based clustering algorithm; dont expect good results when clusters/classes overlap
  *
  * TODO:
- *  - Finish algorithms
+ *  - Pay some more attention to cluster extracting algorithms (add DBSCAN, improve authors proposal, add my own)
  *  - Fix known issues (as far as possible)
  *  - Fix other TODO's scattered in the code
  *  - Use an indexer to speed up neighborhood queries...
+ *
  */
 
 class Optics {
@@ -75,6 +80,11 @@ public:
 		int end;
 	};
 
+	struct Neighbor {
+		int index;
+		float distance;
+	};
+
     //constructor
 	Optics(float eps, int minPoints, bool fixDimensionMismatches = false ) {
 
@@ -91,6 +101,8 @@ public:
 
     //this function is executed every once in a while
 	void tick() {
+
+		preprocessData();
 
         clearResults(); // make sure we make a clean start
 	    startOptics(); //execute the OPTICS algorithm
@@ -181,6 +193,32 @@ private:
 	std::vector<Cluster> clusters;      //using some heuristics, clusters are made out of that
 
 	/**
+	 *   Preparing the dataset, normalizing according to c' = (c - mu) / sigma
+	 *    (mean will be at zero, standard deviation will be one)
+	 **/
+
+	void preprocessData() {
+
+		for (int n = 0; n < dimensionality; n++) { //loop over each dimension in the data set
+			float mu = 0; //average
+			for (int i = 0; i < data_set.size(); i++) { //loop over each sample
+				mu += data_set[i].data[n] / data_set.size();
+			}
+
+			float sigma = 0; //standard deviation
+			for (int i = 0; i < data_set.size(); i++) { //loop over each sample
+				sigma += (data_set[i].data[n] - mu) * (data_set[i].data[n] - mu) / data_set.size();
+			}
+			sigma = sqrt(sigma);
+
+			//use values to normalize data
+			for (int i = 0; i < data_set.size(); i++) { //loop over each sample
+				data_set[i].data[n] = (data_set[i].data[n] - mu) / sigma;
+			}
+		}
+	}
+
+	/**
 	 *   Preparing for a new run of the algorithm
 	 **/
 	void clearResults() {
@@ -246,13 +284,23 @@ private:
 
 	}
 
+	///TODO: add my own extraction method
+
+	///TODO: add a DBSCAN mode for extracting DBSCAN results
+
+	/***
+     * Automated cluster extraction functions as described in the paper..
+     * The authors unfortunately engaged in premature optimalization, thus:
+     * TODO: this deserves some more love and a massive cleanup
+     */
 	enum SteepAreas { STEEPUP, STEEPDOWN, CLUSTER, OUTLIER };
 
 	SteepAreas checkPoint(int i, float xi) {
+		//note: the order of these if statements is important
 		if ((ordered_set[i].reachabilityDistance < 0) && (ordered_set[i+1].reachabilityDistance < 0)) return OUTLIER;
 		if ((ordered_set[i].reachabilityDistance >= 0) && (ordered_set[i+1].reachabilityDistance < 0)) return STEEPUP;
-		if (ordered_set[i].reachabilityDistance <= ordered_set[i+1].reachabilityDistance *(1-xi)) return STEEPUP;
 		if ((ordered_set[i].reachabilityDistance < 0) && (ordered_set[i+1].reachabilityDistance >= 0)) return STEEPDOWN;
+		if (ordered_set[i].reachabilityDistance <= ordered_set[i+1].reachabilityDistance *(1-xi)) return STEEPUP;
 		if (ordered_set[i].reachabilityDistance *(1-xi) >= ordered_set[i+1].reachabilityDistance) return STEEPDOWN;
 		return CLUSTER;
 	}
@@ -287,19 +335,26 @@ private:
 	void tryToMakeACluster(int startUpArea, int endUpArea, std::vector<steepDownArea> &setOfSteepDownAreas, float xi) {
 
 		for (int i = 0; i < setOfSteepDownAreas.size(); i++) {
-			//check if we have a valid cluster (condition sc2* in the paper)
-			if (setOfSteepDownAreas[i].Dmib > ordered_set[endUpArea].reachabilityDistance * (1 - xi)) continue;
-
-			//determine start and end point
 			float reachStart = ordered_set[setOfSteepDownAreas[i].start].reachabilityDistance;
 			float reachEnd = ordered_set[endUpArea + 1].reachabilityDistance;
+			//check if we have a valid cluster (condition sc2* in the paper)
+			if (reachabilityGreaterThan(setOfSteepDownAreas[i].Dmib, reachEnd * (1 - xi))) {
+				//std::cout << "rejecting cluster from " << setOfSteepDownAreas[i].start << " to " << endUpArea << std::endl;
+				//std::cout << setOfSteepDownAreas[i].Dmib << " " << reachEnd * (1 - xi) << std::endl;
+				continue;
+			}
+			//determine start and end point
 			int SoC = 0;
 			int EoC = 0;
-			if ( (reachStart * (1 - xi) < reachEnd) && (reachEnd * (1 - xi) < reachStart) ) { //max xi apart
-				SoC = reachStart;
-				EoC = reachEnd;
-			} else if ((reachStart < 0) || (reachStart > reachEnd) ) { //more than xi apart
-				EoC = reachEnd;
+			if ( (reachEnd < 0 && reachStart < 0) ||
+				 (reachabilityGreaterThan(reachEnd, reachStart * (1 - xi))  &&
+						reachabilityGreaterThan(reachStart, reachEnd * (1 - xi)))) { //max xi apart
+				//std::cout << "added cluster from which start and end are less than xi apart" << std::endl;
+				//std::cout << "from " << setOfSteepDownAreas[i].start << " to " << endUpArea << std::endl;
+				SoC = setOfSteepDownAreas[i].start;
+				EoC = endUpArea;
+			} else if (reachabilityGreaterThan(reachStart, reachEnd) ) { //more than xi apart
+				EoC = endUpArea;
 				float minDistance = fabs(reachEnd - reachStart);
 				int closestPoint = setOfSteepDownAreas[i].start;
 				for (int j = setOfSteepDownAreas[i].start+1; j <= setOfSteepDownAreas[i].end; j++) { //<= correct here?
@@ -310,7 +365,7 @@ private:
 				}
 				SoC = closestPoint;
 			} else {  // (reachStart < reachEnd ) and more than xi apart
-				SoC = reachStart;
+				SoC = setOfSteepDownAreas[i].start;
 				float minDistance = fabs(reachEnd - reachStart);
 				int closestPoint = startUpArea;
 				for (int j = startUpArea+1; j <= endUpArea; j++) { //<= correct here?
@@ -327,42 +382,62 @@ private:
 			// add cluster to SetOfClusters
 			clusters.push_back({SoC, EoC});
 		}
+	}
 
+	void updateMibsAndFilterAreas(int index, std::vector<steepDownArea> &setOfSteepDownAreas, float xi, float globalmib) {
+        for (int i = setOfSteepDownAreas.size() - 1; i >= 0; i--) {
+            if (!reachabilityGreaterThan(ordered_set[setOfSteepDownAreas[i].start].reachabilityDistance * (1 - xi),
+										globalmib)) {
+				//std::cout << "removing area from " << setOfSteepDownAreas[i].start << " to " << setOfSteepDownAreas[i].end << std::endl;
+                setOfSteepDownAreas.erase(setOfSteepDownAreas.begin() + i);
+            } else {
+                setOfSteepDownAreas[i].Dmib =
+						maxReachability(setOfSteepDownAreas[i].Dmib, ordered_set[index].reachabilityDistance);
+            }
+        }
+	}
 
+	bool reachabilityGreaterThan(float r1, float r2) {
+		if ((r1 < 0) && (r2 < 0)) return false;
+		if (r1 < 0) return true;
+		if (r2 < 0) return false;
+		return (r1 > r2);
+	}
 
+	float maxReachability(float r1, float r2 ) {
+		if ((r1 < 0) || (r2 < 0)) return -1;
+		return std::max(r1, r2);
 	}
 
 	void extractClusters() {
-
-		///TODO: extract clusters from the results -> use clusters vector
-		///TODO: perhaps add a DBSCAN mode for extracting DBSCAN results
 		std::vector<steepDownArea> setOfSteepDownAreas;
-		//vector setOfClusters
 
 		//add a temporary sample at the end with reachability -1
 		DataPoint terminator(Eigen::RowVector2f(0, 0), 0);
 		terminator.reachabilityDistance = -1;
 		ordered_set.push_back(terminator);
 
-		float xi = 0.05;
+		float xi = 0.02; ///TODO set this from outside. Note: with a lot of data points this should be set lower
 		int index = 0;
 		float mib = 0;
 		while (index < ordered_set.size() - 1) { //dont consider the terminator sample
-			mib = std::max(mib, ordered_set[index].reachabilityDistance);
+			mib = maxReachability(mib, ordered_set[index].reachabilityDistance);
 			int end;
 
 			switch (checkPoint(index, xi)) {
 				case STEEPDOWN:
-					///TODO: update mib-values and filter SetOfSteepDownAreas(*)
+					updateMibsAndFilterAreas(index, setOfSteepDownAreas, xi, mib);
 					end = findEndOfSteepRegion(index, STEEPDOWN, xi);
 					setOfSteepDownAreas.push_back( {index, end, 0} );
+					std::cout << "steep down area found from " << index << " to " << end << std::endl;
 					index = end + 1;
 					mib = ordered_set[index].reachabilityDistance;
 					break;
 				case STEEPUP:
-					///TODO: update mib-values and filter SetOfSteepDownAreas
+					updateMibsAndFilterAreas(index, setOfSteepDownAreas, xi, mib);
 					end = findEndOfSteepRegion(index, STEEPUP, xi);
 					tryToMakeACluster(index, end, setOfSteepDownAreas, xi);
+					std::cout << "steep up area found from " << index << " to " << end << std::endl;
 					index = end + 1;
 					mib = ordered_set[index].reachabilityDistance;
 					break;
@@ -421,13 +496,13 @@ private:
         seeds.erase(seeds.begin() + nextSeed); //and take it off the seeds list
 
         //then find the seeds neighbors
-        std::map<int, float> neighbors;
+        std::vector<Neighbor> neighbors;
         std::vector<float> distances;
         for (int j = 0; j < data_set.size(); j++) {  /// TODO: this is the main/only candidate for speedup by indexing
             if (j == i) continue;                    //  dont put yourself on your neighbors list..
             float distance = (data_set[i].data - data_set[j].data).norm();
             if (distance >= epsilon) continue;       //  point is too far away to be a neighbor
-            neighbors.insert( std::pair<int, float>(j, distance) );
+            neighbors.push_back( {j, distance} );
             distances.push_back(distance);           // this one only for sorting in the next step
         }
 
@@ -441,23 +516,23 @@ private:
         data_set[i].processed = true;             //dont return to this sample anymore
         ///TODO: better to only store order with ints instead of whole structs
         ordered_set.push_back(data_set[i]);       //insert data point in ordered list
-        if (data_set[i].coreDistance < 0) return; //if this point is not a core object, return and try next seed
+        if (data_set[i].coreDistance >= 0) { //finally, if we have a core object, add its neighbours to the seed list
+			for (int j = 0; j < neighbors.size(); j++) {
+				if (data_set[neighbors[j].index].processed) continue; //dont add neighbors that have been processed already
 
-        //finally, we have a core object, so add its neighbours to the seed list
-        for (std::map<int, float>::iterator it = neighbors.begin(); it != neighbors.end(); ++it) {
-            if (data_set[it->first].processed) continue; //dont add neighbors that have been processed already
+				//check if we should update reachability distance from current sample
+				float newReachibilityDistance = std::max(data_set[i].coreDistance, neighbors[j].distance);
 
-            //check if we should update reachability distance from current sample
-            float newReachibilityDistance = std::max(data_set[i].coreDistance, it->second);
+				//insert neighbour as seed if it isnt in the list yet
+				if (data_set[neighbors[j].index].reachabilityDistance < 0) {
 
-            //insert neighbour as seed if it isnt in the list yet
-            if (data_set[it->first].reachabilityDistance < 0) {
-                seeds.push_back(it->first);
-                data_set[it->first].reachabilityDistance = newReachibilityDistance;
-            } else { //should be in the list already, just check if we have to update r-distance
-                data_set[it->first].reachabilityDistance =
-						std::min(newReachibilityDistance, data_set[it->first].reachabilityDistance);
-            }
+					seeds.push_back(neighbors[j].index);
+					data_set[neighbors[j].index].reachabilityDistance = newReachibilityDistance;
+				} else { //should be in the list already, just check if we have to update r-distance
+					data_set[neighbors[j].index].reachabilityDistance =
+							std::min(newReachibilityDistance, data_set[neighbors[j].index].reachabilityDistance);
+				}
+			}
         }
 
         //keep going until there are no seeds left
@@ -465,6 +540,5 @@ private:
     }
 
 };
-
 
 #endif /* OPTICS_H_ */

@@ -19,8 +19,8 @@ int main()
 
 	std::ifstream f;
 	//std::string file = "./data/gauss.data";
-	//std::string file = "./data/abalone3.data";
-	std::string file = "./data/iris2.data";
+	std::string file = "./data/abalone3.data";
+	//std::string file = "./data/iris2.data";
 
 // obtained # of clusters by $(cat ../../data/abalone3.data | cut -f11 -d',' | sort -n | uniq | wc -l)
 //predefined_clusters = 28;
@@ -44,8 +44,8 @@ int main()
 	std::cout << "Dimensionality is " << D << std::endl;
 
 	//int K = predefined_clusters;
-	float eps = 1.5;
-	int minPts = 5;
+	float eps = 0.7;
+	int minPts = 25;
 	Optics optics(eps, minPts);
 
 	int S = d.size(); // # samples
